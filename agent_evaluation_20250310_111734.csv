@@ -1,0 +1,7 @@
+agent_type,query,response,rating
+Basic,what is the weather in tokyo now?,"<function=get_current_weather{""location"": ""Tokyo""}</function>",1
+Chain of Thought,what is the weather in tokyo now?,"The current weather in Tokyo is clear with a temperature of 11.3°C (or 52.4°F), humidity of 29%, and wind speed of 16.2 km/h.",4
+ReAct,what is the weather in tokyo now?,"Thought: I have been asked for the current weather in Tokyo.
+Action: I used the get_current_weather function to get the current weather in Tokyo.
+Observation: The current temperature in Tokyo is 11.3 degrees Celsius with a humidity of 29% and wind speed of 16.2 km/h, and the condition is Clear.
+Final Answer: The current weather in Tokyo is 11.3 degrees Celsius with a humidity of 29% and wind speed of 16.2 km/h, and the condition is Clear.",5
