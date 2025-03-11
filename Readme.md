@@ -12,11 +12,10 @@ import csv
 from datetime import datetime
 
 # Load environment variables from .env file
-load_dotenv()
+load_dotenv("/mnt/f/New Giza University/Courses/Spring 2024-2025/Data Mining/Week 5/Conversational Agents/.env")
 API_KEY = os.environ.get("API_KEY", os.getenv('OPTOGPT_API_KEY'))
 BASE_URL = os.environ.get("BASE_URL", os.getenv('BASE_URL'))
 LLM_MODEL = os.environ.get("LLM_MODEL", os.getenv('OPTOGPT_MODEL'))
-
 # Initialize the OpenAI client with custom base URL
 client = OpenAI(
     api_key=API_KEY,
@@ -261,53 +260,85 @@ Final Answer: The temperature difference between New York and London today is X 
 Always make your reasoning explicit and show your work.
 """
 
-# Core function to process messages and invoke tools
 def process_messages(client, messages, tools=None, available_functions=None):
     """
     Process messages and invoke tools as needed.
-    
-    Args:
-        client: The OpenAI client
-        messages: The conversation history
-        tools: The available tools
-        available_functions: A dictionary mapping tool names to functions
-        
-    Returns:
-        The list of messages with new additions
     """
-    # If tools and available_functions are None, use an empty list/dict
     tools = tools or []
     available_functions = available_functions or {}
     
-    # Step 1: Send the messages to the model with the tool definitions
-    response = client.chat.completions.create(
-        model=LLM_MODEL,
-        messages=messages,
-        tools=tools,
-    )
+    MAX_ITERATIONS = 3  # Prevent infinite loops
+    iteration = 0
     
-    response_message = response.choices[0].message
-    
-    # Step 2: Append the model's response to the conversation
-    messages.append(response_message)
-    
-    # Step 3: Check if the model wanted to use a tool
-    if response_message.tool_calls:
-        # Step 4: Extract tool invocation and make evaluation
-        for tool_call in response_message.tool_calls:
-            function_name = tool_call.function.name
-            function_to_call = available_functions[function_name]
-            function_args = json.loads(tool_call.function.arguments)
-            function_response = function_to_call(**function_args)
+    while iteration < MAX_ITERATIONS:
+        iteration += 1
+        
+        # Convert messages to dict format
+        dict_messages = []
+        for msg in messages:
+            if isinstance(msg, dict):
+                dict_messages.append(msg)
+            else:
+                dict_messages.append({"role": msg.role, "content": msg.content})
+        
+        # Get model response
+        response = client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=dict_messages,
+            tools=tools,
+        )
+        
+        response_message = response.choices[0].message
+        messages.append({
+            "role": "assistant",
+            "content": response_message.content or "",
+            "tool_calls": getattr(response_message, 'tool_calls', None)
+        })
+        
+        # If there's content, return immediately
+        if response_message.content:
+            return messages
             
-            # Step 5: Extend conversation with function response
-            messages.append({
-                "tool_call_id": tool_call.id,
-                "role": "tool",
-                "name": function_name,
-                "content": function_response,
-            })
-    
+        # Process tool calls if they exist
+        if response_message.tool_calls:
+            for tool_call in response_message.tool_calls:
+                function_name = tool_call.function.name
+                function_to_call = available_functions.get(function_name)
+                
+                if not function_to_call:
+                    messages.append({
+                        "role": "tool",
+                        "content": f"Error: Function {function_name} not found",
+                        "tool_call_id": tool_call.id
+                    })
+                    continue
+                    
+                try:
+                    function_args = json.loads(tool_call.function.arguments)
+                    function_response = function_to_call(**function_args)
+                    messages.append({
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": function_name,
+                        "content": str(function_response),
+                    })
+                except Exception as e:
+                    messages.append({
+                        "role": "tool",
+                        "content": f"Error: {str(e)}",
+                        "tool_call_id": tool_call.id
+                    })
+        else:
+            # No content and no tool calls - break loop
+            break
+            
+    # Force a final response if no content was generated
+    if not messages[-1].get("content"):
+        messages.append({
+            "role": "assistant",
+            "content": "I need more information to answer that. Could you please clarify?"
+        })
+        
     return messages
 
 # Function to run the conversation
@@ -352,16 +383,18 @@ def run_conversation(client, system_message="You are a helpful weather assistant
         # Process the messages and get tool calls if any
         messages = process_messages(client, messages, tools, available_functions)
         
-        # Check the last message to see if it's from the assistant
-        last_message = messages[-1]
+        # After processing messages, search for the latest assistant message
+        last_assistant_message = None
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant" and msg.get("content"):
+                last_assistant_message = msg["content"]
+                break
         
-        # If the last message has content, print it
-        if last_message["role"] == "assistant" and last_message.get("content"):
-            print(f"\nWeather Assistant: {last_message['content']}\n")
-    
-    return messages
+        if last_assistant_message:
+            print(f"\nWeather Assistant: {last_assistant_message}\n")
+        else:
+            print("\nWeather Assistant: Hmm, I'm having trouble with that. Could you rephrase?\n")
 
-# Bonus Challenge: Comparative Evaluation System
 def comparative_evaluation(client, user_query):
     """
     Process a single query with all three agent types and compare the results
@@ -399,14 +432,20 @@ def comparative_evaluation(client, user_query):
         ]
         
         # Process the message
-        messages = process_messages(client, messages, config["tools"], available_functions)
+        processed_messages = process_messages(client, messages.copy(), config["tools"], available_functions)
         
         # Get the response
         response = ""
-        for message in messages:
-            if message["role"] == "assistant" and message.get("content"):
-                response = message["content"]
-                break
+        for message in processed_messages:
+            # Handle both dictionary-type messages and ChatCompletionMessage objects
+            if isinstance(message, dict):
+                if message["role"] == "assistant" and message.get("content"):
+                    response = message["content"]
+                    break
+            else:  # It's a ChatCompletionMessage object
+                if message.role == "assistant" and message.content:
+                    response = message.content
+                    break
         
         # Print the response
         print(f"\n{config['name']} Agent Response:")
