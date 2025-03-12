@@ -51,7 +51,12 @@ def get_weather_forecast(location, days=3):
     
     response = requests.get(url)
     data = response.json()
-    
+    try:
+        days = int(days)
+    except (ValueError, TypeError):
+        return "Error: Days parameter must be an integer"
+    if days < 1 or days > 10:
+        return "Error: Days must be between 1 and 10"
     if "error" in data:
         return f"Error: {data['error']['message']}"
     
@@ -258,28 +263,43 @@ Observation: [Result of calculation]
 Final Answer: The temperature difference between New York and London today is X degrees.
 
 Always make your reasoning explicit and show your work.
+Important format rules:
+- Assistant messages MUST EITHER contain content OR tool_calls
+- Never include empty tool_calls in messages
 """
 
 def process_messages(client, messages, tools=None, available_functions=None):
-    """
-    Process messages and invoke tools as needed.
-    """
     tools = tools or []
     available_functions = available_functions or {}
-    
-    MAX_ITERATIONS = 3  # Prevent infinite loops
+    MAX_ITERATIONS = 3
     iteration = 0
     
     while iteration < MAX_ITERATIONS:
         iteration += 1
         
-        # Convert messages to dict format
+        # Convert messages to API-compatible format
         dict_messages = []
         for msg in messages:
+            # Handle both dictionary and object formats
             if isinstance(msg, dict):
-                dict_messages.append(msg)
+                role = msg["role"]
+                content = msg.get("content", "")
+                tool_calls = msg.get("tool_calls", None)
+                tool_call_id = msg.get("tool_call_id", None)
             else:
-                dict_messages.append({"role": msg.role, "content": msg.content})
+                role = msg.role
+                content = msg.content
+                tool_calls = getattr(msg, "tool_calls", None)
+                tool_call_id = getattr(msg, "tool_call_id", None)
+            
+            entry = {"role": role, "content": content}
+            
+            if role == "assistant" and tool_calls:
+                entry["tool_calls"] = tool_calls
+            elif role == "tool":
+                entry["tool_call_id"] = tool_call_id  # Critical fix
+            
+            dict_messages.append(entry)
         
         # Get model response
         response = client.chat.completions.create(
@@ -288,28 +308,31 @@ def process_messages(client, messages, tools=None, available_functions=None):
             tools=tools,
         )
         
+        # Store response properly
         response_message = response.choices[0].message
-        messages.append({
+        assistant_message = {
             "role": "assistant",
-            "content": response_message.content or "",
-            "tool_calls": getattr(response_message, 'tool_calls', None)
-        })
+            "content": response_message.content or ""
+        }
+        if response_message.tool_calls:
+            assistant_message["tool_calls"] = response_message.tool_calls
         
-        # If there's content, return immediately
+        messages.append(assistant_message)
+        
         if response_message.content:
             return messages
             
-        # Process tool calls if they exist
         if response_message.tool_calls:
             for tool_call in response_message.tool_calls:
                 function_name = tool_call.function.name
                 function_to_call = available_functions.get(function_name)
                 
                 if not function_to_call:
+                    # Include tool_call_id in error response
                     messages.append({
                         "role": "tool",
                         "content": f"Error: Function {function_name} not found",
-                        "tool_call_id": tool_call.id
+                        "tool_call_id": tool_call.id  # <-- This was missing
                     })
                     continue
                     
@@ -317,22 +340,20 @@ def process_messages(client, messages, tools=None, available_functions=None):
                     function_args = json.loads(tool_call.function.arguments)
                     function_response = function_to_call(**function_args)
                     messages.append({
-                        "tool_call_id": tool_call.id,
                         "role": "tool",
                         "name": function_name,
                         "content": str(function_response),
+                        "tool_call_id": tool_call.id  # <-- Mandatory field
                     })
                 except Exception as e:
                     messages.append({
                         "role": "tool",
                         "content": f"Error: {str(e)}",
-                        "tool_call_id": tool_call.id
+                        "tool_call_id": tool_call.id  # <-- This was missing
                     })
         else:
-            # No content and no tool calls - break loop
             break
             
-    # Force a final response if no content was generated
     if not messages[-1].get("content"):
         messages.append({
             "role": "assistant",
